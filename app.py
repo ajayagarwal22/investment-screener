@@ -840,16 +840,19 @@ def render_screener_page():
     with col_sel:
         preset = st.selectbox("Quick Preset", preset_options, key="sc_preset")
 
-    with col_custom:
-        if preset.startswith("──"):
-            default_list = ""
-        elif preset == "Enter Custom Stocks":
-            default_list = ""
+    # When the preset changes, push the new stock list into the text-input's session state
+    # before the widget renders — this is the only reliable way to update a keyed text_input.
+    last_preset = st.session_state.get("sc_last_preset", "")
+    if preset != last_preset:
+        st.session_state["sc_last_preset"] = preset
+        if not preset.startswith("──") and preset != "Enter Custom Stocks":
+            st.session_state["sc_custom_input"] = ", ".join(SCREENER_PRESETS.get(preset, []))
         else:
-            default_list = ", ".join(SCREENER_PRESETS.get(preset, []))
+            st.session_state["sc_custom_input"] = ""
+
+    with col_custom:
         custom_input = st.text_input(
             "Stocks (comma-separated, full list — screened in batches of 15)",
-            value=default_list,
             placeholder="e.g. RELIANCE, HDFCBANK, TCS, INFY ...",
             key="sc_custom_input",
         )
@@ -860,22 +863,25 @@ def render_screener_page():
         st.caption(f"{preset}: {total} stocks · screened {BATCH_SIZE} at a time · results accumulate and rank automatically")
 
     # ── Action buttons ─────────────────────────────────────────────────────────
+    analyzed  = len(st.session_state.sc_results)
+    remaining = max(0, len(st.session_state.sc_all_symbols) - st.session_state.sc_offset)
+
     c_run, c_next, c_clear = st.columns([2, 2, 1])
 
     with c_run:
         start_clicked = st.button("▶  Start Screening (First 15)", type="primary",
-                                  use_container_width=True)
+                                  use_container_width=True, key="sc_start_btn")
     with c_next:
-        analyzed   = len(st.session_state.sc_results)
-        remaining  = max(0, len(st.session_state.sc_all_symbols) - st.session_state.sc_offset)
-        next_label = f"⏭  Next 15  ({remaining} remaining)" if remaining > 0 else "⏭  Next 15"
-        next_clicked = st.button(next_label, use_container_width=True,
+        next_clicked = st.button("⏭  Next 15", use_container_width=True,
+                                 key="sc_next_btn",
                                  disabled=(remaining == 0 or not st.session_state.sc_all_symbols))
+        if remaining > 0:
+            st.caption(f"{remaining} stocks remaining")
     with c_clear:
-        if st.button("✕ Reset", use_container_width=True):
-            st.session_state.sc_all_symbols = []
-            st.session_state.sc_offset      = 0
-            st.session_state.sc_results     = []
+        if st.button("✕ Reset", use_container_width=True, key="sc_reset_btn"):
+            st.session_state.sc_all_symbols  = []
+            st.session_state.sc_offset       = 0
+            st.session_state.sc_results      = []
             st.session_state.sc_preset_label = ""
             st.rerun()
 
@@ -892,10 +898,6 @@ def render_screener_page():
         st.session_state.sc_offset       = 0
         st.session_state.sc_results      = []
         st.session_state.sc_preset_label = preset
-
-    # ── Next: run next batch ───────────────────────────────────────────────────
-    if next_clicked and st.session_state.sc_all_symbols:
-        pass   # falls through to batch execution below
 
     # ── Execute pending batch ──────────────────────────────────────────────────
     trigger = start_clicked or next_clicked

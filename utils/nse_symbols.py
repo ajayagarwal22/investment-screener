@@ -1,6 +1,6 @@
 """
-Fetches and caches the complete NSE + BSE equity list including SME/Emerge.
-Provides symbol → company name lookup for autocomplete.
+Fetches and caches the complete NSE + BSE equity list.
+Provides symbol → company name lookup for autocomplete and live NSE search.
 """
 
 import time
@@ -10,25 +10,17 @@ from io import StringIO
 from pathlib import Path
 
 # Local cache files (stored in project root, gitignored)
-_NSE_CACHE     = Path(__file__).parent.parent / ".nse_equity_list.csv"
-_BSE_CACHE     = Path(__file__).parent.parent / ".bse_equity_list.csv"
-_NSE_SME_CACHE = Path(__file__).parent.parent / ".nse_sme_list.csv"
-_BSE_SME_CACHE = Path(__file__).parent.parent / ".bse_sme_list.csv"
-_CACHE_TTL     = 7 * 24 * 3600   # refresh once a week
+_NSE_CACHE = Path(__file__).parent.parent / ".nse_equity_list.csv"
+_BSE_CACHE = Path(__file__).parent.parent / ".bse_equity_list.csv"
+_CACHE_TTL  = 7 * 24 * 3600   # refresh once a week
 
-# NSE official equity list (main board EQ series)
+# NSE official equity list (main board EQ/BE/BZ series)
 _NSE_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
 
 # BSE active equity list via BSE API
 _BSE_URL = (
     "https://api.bseindia.com/BseIndiaAPI/api/ListofScripData/w"
     "?Group=&Scripcode=&industry=&segment=Equity&status=Active"
-)
-
-# BSE SME/Emerge segment
-_BSE_SME_URL = (
-    "https://api.bseindia.com/BseIndiaAPI/api/ListofScripData/w"
-    "?Group=&Scripcode=&industry=&segment=SME&status=Active"
 )
 
 _HEADERS = {
@@ -97,85 +89,6 @@ def _fetch_nse() -> dict[str, str]:
         return {}
 
 
-# ── NSE Emerge/SME fetcher ────────────────────────────────────────────────────
-
-def _create_nse_session() -> requests.Session:
-    """Establish a session with NSE to obtain cookies for API access."""
-    session = requests.Session()
-    try:
-        session.get("https://www.nseindia.com", headers=_HEADERS, timeout=15)
-    except Exception:
-        pass
-    return session
-
-
-def _fetch_nse_sme() -> dict[str, str]:
-    """
-    Fetch NSE Emerge/SME stocks.
-    Tries multiple NSE endpoints in order; falls back to alphabetic
-    autocomplete search (A-Z) if bulk endpoints are unavailable.
-    """
-    result: dict[str, str] = {}
-    try:
-        session = _create_nse_session()
-        nse_headers = {**_HEADERS, "Referer": "https://www.nseindia.com/emerge"}
-
-        # ── Attempt 1: NSE Emerge index constituents ──────────────────────────
-        emerge_index_urls = [
-            "https://www.nseindia.com/api/equity-stockIndices?index=EMERGE%20BOARD%20IND",
-            "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20EMERGE%20BOARD%20IND",
-            "https://www.nseindia.com/api/allSymbols?marketType=EMERGE",
-        ]
-        for url in emerge_index_urls:
-            try:
-                resp = session.get(url, headers=nse_headers, timeout=15)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    stocks = data if isinstance(data, list) else data.get(
-                        "data", data.get("records", data.get("Table", [])))
-                    for item in (stocks if isinstance(stocks, list) else []):
-                        if not isinstance(item, dict):
-                            continue
-                        il = {k.lower(): v for k, v in item.items()}
-                        sym = str(il.get("symbol", il.get("scripid", ""))).strip().upper()
-                        name = str(il.get("companyname", il.get("scripname",
-                               il.get("issuer_name", "")))).strip().title()
-                        if sym and name and sym not in ("Nan", "NAN", ""):
-                            result[sym] = name
-                    if result:
-                        break
-            except Exception:
-                continue
-
-        # ── Attempt 2: Alphabetic autocomplete search ─────────────────────────
-        # Each query returns up to 10 results; 26 queries ≈ 260 SME stocks min
-        if not result:
-            for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-                try:
-                    resp = session.get(
-                        f"https://www.nseindia.com/api/search/autocomplete?q={char}",
-                        headers=nse_headers,
-                        timeout=10,
-                    )
-                    if resp.status_code == 200:
-                        for item in resp.json().get("data", []):
-                            if item.get("result_sub_type") == "sme":
-                                sym  = str(item.get("symbol", "")).strip().upper()
-                                name = str(item.get("symbol_info", "")).strip()
-                                if sym and name:
-                                    result[sym] = name
-                    time.sleep(0.25)
-                except Exception:
-                    continue
-
-    except Exception:
-        pass
-
-    if result:
-        _save_cache(_NSE_SME_CACHE, result)
-    return result
-
-
 # ── BSE main board fetcher ────────────────────────────────────────────────────
 
 def _fetch_bse() -> dict[str, str]:
@@ -206,43 +119,13 @@ def _fetch_bse() -> dict[str, str]:
         return {}
 
 
-# ── BSE SME/Emerge fetcher ────────────────────────────────────────────────────
-
-def _fetch_bse_sme() -> dict[str, str]:
-    """Fetch BSE SME/Emerge segment stocks (segment=SME)."""
-    try:
-        resp = requests.get(_BSE_SME_URL,
-                            headers={**_HEADERS, "Referer": "https://www.bseindia.com/"},
-                            timeout=15)
-        resp.raise_for_status()
-        raw = resp.json()
-
-        items = raw if isinstance(raw, list) else raw.get("Table", raw.get("data", []))
-
-        result: dict[str, str] = {}
-        for item in items:
-            item_lower = {k.lower(): v for k, v in item.items()}
-            sym  = str(item_lower.get("scrip_id",   "")).strip().upper()
-            name = str(item_lower.get("scrip_name", item_lower.get("issuer_name", ""))).strip().title()
-            name = name.rstrip(" $-").strip()
-            if sym and name and sym not in ("Nan", "NAN", ""):
-                result[sym] = name
-
-        if result:
-            _save_cache(_BSE_SME_CACHE, result)
-        return result
-    except Exception:
-        return {}
-
-
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_nse_symbol_map() -> dict[str, str]:
     """
-    Returns {SYMBOL: "Company Name"} merging NSE + BSE equity lists
-    including SME/Emerge segments.
-    Uses local cache refreshed weekly; falls back to built-in list if
-    downloads fail.
+    Returns {SYMBOL: "Company Name"} merging NSE + BSE main board equity lists.
+    Uses local cache refreshed weekly; falls back to built-in list if downloads fail.
+    For SME/Emerge stocks use nse_live_search() instead.
     """
     # NSE main board
     nse = _load_cache(_NSE_CACHE) if _fresh(_NSE_CACHE) else _fetch_nse()
@@ -254,18 +137,8 @@ def get_nse_symbol_map() -> dict[str, str]:
     if not bse:
         bse = _load_cache(_BSE_CACHE)
 
-    # BSE SME/Emerge
-    bse_sme = _load_cache(_BSE_SME_CACHE) if _fresh(_BSE_SME_CACHE) else _fetch_bse_sme()
-    if not bse_sme:
-        bse_sme = _load_cache(_BSE_SME_CACHE)
-
-    # NSE SME/Emerge
-    nse_sme = _load_cache(_NSE_SME_CACHE) if _fresh(_NSE_SME_CACHE) else _fetch_nse_sme()
-    if not nse_sme:
-        nse_sme = _load_cache(_NSE_SME_CACHE)
-
-    # Merge priority (highest wins): curated > NSE main > BSE main > NSE SME > BSE SME
-    merged = {**bse_sme, **nse_sme, **bse, **nse}
+    # Merge: NSE names take priority for same symbol (better formatted)
+    merged = {**bse, **nse}
 
     if not merged:
         from utils.config import NSE_SYMBOL_MAP
@@ -288,11 +161,21 @@ def symbol_from_option(option: str) -> str:
     return option.split(" — ")[0].strip()
 
 
+def _create_nse_session() -> requests.Session:
+    """Establish a session with NSE to obtain cookies for authenticated API access."""
+    session = requests.Session()
+    try:
+        session.get("https://www.nseindia.com", headers=_HEADERS, timeout=15)
+    except Exception:
+        pass
+    return session
+
+
 def nse_live_search(query: str) -> list[str]:
     """
-    Live NSE symbol search including SME/Emerge stocks.
-    Uses NSE session-based autocomplete API.
-    Returns list of 'SYMBOL — Company Name' strings.
+    Live NSE symbol search using the NSE autocomplete API.
+    Covers all stocks including SME/Emerge (e.g. FRESHARA) not in the static list.
+    Returns list of 'SYMBOL — Company Name' or 'SYMBOL — Company Name [SME]' strings.
     """
     q = query.strip()
     if len(q) < 2:
@@ -312,8 +195,7 @@ def nse_live_search(query: str) -> list[str]:
             if item.get("result_type") == "symbol":
                 sym  = str(item.get("symbol", "")).strip().upper()
                 name = str(item.get("symbol_info", "")).strip()
-                sub  = item.get("result_sub_type", "")
-                tag  = " [SME]" if sub == "sme" else ""
+                tag  = " [SME]" if item.get("result_sub_type") == "sme" else ""
                 if sym and name:
                     results.append(f"{sym} — {name}{tag}")
         return results
