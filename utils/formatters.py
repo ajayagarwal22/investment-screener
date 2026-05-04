@@ -148,16 +148,15 @@ def score_bar_html(score: int, max_score: int = 100,
             color = "#FFC107"
         else:
             color = "#F44336"
-    return f"""
-    <div style="margin:4px 0">
-      <div style="font-size:0.78em;color:#aaa;margin-bottom:2px;">{label}</div>
-      <div style="background:#333;border-radius:4px;height:10px;width:100%">
-        <div style="background:{color};width:{pct:.0f}%;height:10px;border-radius:4px;
-                    transition:width 0.5s ease;"></div>
-      </div>
-      <div style="font-size:0.78em;color:#ccc;text-align:right">{score}/{max_score}</div>
-    </div>
-    """
+    return (
+        f'<div style="margin:4px 0">'
+        f'<div style="font-size:0.78em;color:#aaa;margin-bottom:2px;">{label}</div>'
+        f'<div style="background:#333;border-radius:4px;height:10px;width:100%">'
+        f'<div style="background:{color};width:{pct:.0f}%;height:10px;border-radius:4px;'
+        f'transition:width 0.5s ease;"></div></div>'
+        f'<div style="font-size:0.78em;color:#ccc;text-align:right">{score}/{max_score}</div>'
+        f'</div>'
+    )
 
 
 def rr_badge(ratio: float) -> str:
