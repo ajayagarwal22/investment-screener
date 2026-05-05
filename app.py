@@ -143,19 +143,25 @@ st.markdown("""
 # HELPER: Draw candlestick with EMA + RSI + Volume
 # ─────────────────────────────────────────────────────────────────────────────
 
-def draw_chart(daily_df: pd.DataFrame, symbol: str) -> go.Figure:
-    if daily_df is None or daily_df.empty:
+def draw_chart(df: pd.DataFrame, symbol: str,
+               label: str = "Daily",
+               ema_periods: list = None,
+               max_bars: int = 1260,
+               interval: str = "1d",
+               init_bars: int = 120) -> go.Figure:
+    if df is None or df.empty:
         return go.Figure()
+    if ema_periods is None:
+        ema_periods = [20, 50, 200]
 
-    close  = daily_df["Close"].squeeze()
-    high   = daily_df["High"].squeeze()
-    low    = daily_df["Low"].squeeze()
-    open_  = daily_df["Open"].squeeze()
-    volume = daily_df["Volume"].squeeze()
-    dates  = daily_df.index
+    close  = df["Close"].squeeze()
+    high   = df["High"].squeeze()
+    low    = df["Low"].squeeze()
+    open_  = df["Open"].squeeze()
+    volume = df["Volume"].squeeze()
+    dates  = df.index
 
-    # Take last 252 trading days
-    n = min(len(daily_df), 252)
+    n = min(len(df), max_bars)
     close  = close.iloc[-n:]
     high   = high.iloc[-n:]
     low    = low.iloc[-n:]
@@ -163,10 +169,46 @@ def draw_chart(daily_df: pd.DataFrame, symbol: str) -> go.Figure:
     volume = volume.iloc[-n:]
     dates  = dates[-n:]
 
-    ema20  = compute_ema(close, 20)
-    ema50  = compute_ema(close, 50)
-    ema200 = compute_ema(close, 200) if len(close) >= 200 else None
-    rsi    = compute_rsi(close, 14)
+    is_intraday = interval in ("5m", "15m", "1h", "60m")
+
+    # Always use category axis — prevents empty space when zooming out on all timeframes
+    if is_intraday:
+        x = [pd.Timestamp(d).strftime("%d/%m %H:%M") for d in dates]
+        tickvals, ticktext = [], []
+        prev_date = None
+        for i, d in enumerate(dates):
+            ts = pd.Timestamp(d)
+            is_new_day = ts.date() != prev_date
+            if is_new_day or ts.minute == 0:
+                tickvals.append(x[i])
+                ticktext.append(
+                    f"{ts.strftime('%H:%M')}<br>{ts.strftime('%d %b')}" if is_new_day
+                    else ts.strftime("%H:%M")
+                )
+                prev_date = ts.date()
+    elif interval in ("1wk", "1mo"):
+        fmt = "%b '%y"
+        x = [pd.Timestamp(d).strftime(fmt) for d in dates]
+        tickvals = x[::max(1, len(x)//20)]
+        ticktext = tickvals
+    else:
+        # Daily — show "DD Mon" ticks, one per month boundary
+        x = [pd.Timestamp(d).strftime("%d %b '%y") for d in dates]
+        tickvals, ticktext = [], []
+        prev_month = None
+        for i, d in enumerate(dates):
+            ts = pd.Timestamp(d)
+            if ts.month != prev_month:
+                tickvals.append(x[i])
+                ticktext.append(ts.strftime("%b '%y"))
+                prev_month = ts.month
+    x_rev = x[::-1]
+
+    ema_colors = ["#FFA726", "#42A5F5", "#EF5350"]
+    emas = [(p, compute_ema(close, p), ema_colors[i % 3])
+            for i, p in enumerate(ema_periods) if len(close) >= p]
+
+    rsi = compute_rsi(close, 14)
     bb_up, bb_mid, bb_lo = compute_bollinger(close)
 
     fig = make_subplots(
@@ -178,40 +220,39 @@ def draw_chart(daily_df: pd.DataFrame, symbol: str) -> go.Figure:
 
     # ── Candlestick ───────────────────────────────────────────────────────────
     fig.add_trace(go.Candlestick(
-        x=dates, open=open_, high=high, low=low, close=close,
+        x=x, open=open_.values, high=high.values, low=low.values, close=close.values,
         name="Price",
         increasing_line_color="#4caf50", decreasing_line_color="#f44336",
         increasing_fillcolor="#4caf50",  decreasing_fillcolor="#f44336",
     ), row=1, col=1)
 
-    # ── Bollinger Bands (shaded) ──────────────────────────────────────────────
+    # ── Bollinger Bands ───────────────────────────────────────────────────────
     fig.add_trace(go.Scatter(
-        x=list(dates) + list(dates[::-1]),
+        x=x + x_rev,
         y=list(bb_up.values) + list(bb_lo.values[::-1]),
         fill="toself", fillcolor="rgba(74,158,255,0.06)",
         line=dict(color="rgba(0,0,0,0)"),
         name="Bollinger Band", showlegend=False,
     ), row=1, col=1)
-    fig.add_trace(go.Scatter(x=dates, y=bb_up,  line=dict(color="rgba(74,158,255,0.4)", width=1, dash="dot"), name="BB Upper", showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=dates, y=bb_mid, line=dict(color="rgba(74,158,255,0.3)", width=1, dash="dot"), name="BB Mid",   showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=dates, y=bb_lo,  line=dict(color="rgba(74,158,255,0.4)", width=1, dash="dot"), name="BB Lower", showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=bb_up.values,  line=dict(color="rgba(74,158,255,0.4)", width=1, dash="dot"), name="BB Upper", showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=bb_mid.values, line=dict(color="rgba(74,158,255,0.3)", width=1, dash="dot"), name="BB Mid",   showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=bb_lo.values,  line=dict(color="rgba(74,158,255,0.4)", width=1, dash="dot"), name="BB Lower", showlegend=False), row=1, col=1)
 
     # ── EMAs ──────────────────────────────────────────────────────────────────
-    fig.add_trace(go.Scatter(x=dates, y=ema20,  line=dict(color="#FFA726", width=1.5), name="EMA 20"),  row=1, col=1)
-    fig.add_trace(go.Scatter(x=dates, y=ema50,  line=dict(color="#42A5F5", width=1.5), name="EMA 50"),  row=1, col=1)
-    if ema200 is not None:
-        fig.add_trace(go.Scatter(x=dates, y=ema200, line=dict(color="#EF5350", width=2.0), name="EMA 200"), row=1, col=1)
+    for period, ema_vals, color in emas:
+        width = 2.0 if period == ema_periods[-1] else 1.5
+        fig.add_trace(go.Scatter(x=x, y=ema_vals.values,
+                                 line=dict(color=color, width=width),
+                                 name=f"EMA {period}"), row=1, col=1)
 
-    # ── Volume bars ───────────────────────────────────────────────────────────
+    # ── Volume ────────────────────────────────────────────────────────────────
     colors = ["#4caf50" if c >= o else "#f44336"
               for c, o in zip(close.values, open_.values)]
-    fig.add_trace(go.Bar(
-        x=dates, y=volume, name="Volume",
-        marker_color=colors, opacity=0.7, showlegend=False,
-    ), row=2, col=1)
+    fig.add_trace(go.Bar(x=x, y=volume.values, name="Volume",
+                         marker_color=colors, opacity=0.7, showlegend=False), row=2, col=1)
 
     # ── RSI ───────────────────────────────────────────────────────────────────
-    fig.add_trace(go.Scatter(x=dates, y=rsi, line=dict(color="#CE93D8", width=1.5),
+    fig.add_trace(go.Scatter(x=x, y=rsi.values, line=dict(color="#CE93D8", width=1.5),
                              name="RSI", showlegend=False), row=3, col=1)
     fig.add_hline(y=70, line_dash="dot", line_color="rgba(244,67,54,0.6)",  row=3, col=1)
     fig.add_hline(y=30, line_dash="dot", line_color="rgba(76,175,80,0.6)",  row=3, col=1)
@@ -226,10 +267,20 @@ def draw_chart(daily_df: pd.DataFrame, symbol: str) -> go.Figure:
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
                     font=dict(size=11)),
         xaxis_rangeslider_visible=False,
-        title=dict(text=f"{symbol} — Daily Chart", font=dict(size=14, color="#8892a4")),
+        title=dict(text=f"{symbol} — {label} Chart", font=dict(size=14, color="#8892a4")),
+        dragmode="pan",
     )
-    fig.update_xaxes(gridcolor="#1c2333", showgrid=True)
-    fig.update_yaxes(gridcolor="#1c2333", showgrid=True)
+
+    n_bars = len(x)
+    init_view = min(init_bars, n_bars)
+    fig.update_xaxes(
+        type="category",
+        tickmode="array", tickvals=tickvals, ticktext=ticktext,
+        tickangle=-45,
+        range=[n_bars - init_view - 0.5, n_bars - 0.5],
+        gridcolor="#1c2333", showgrid=True, fixedrange=False,
+    )
+    fig.update_yaxes(gridcolor="#1c2333", showgrid=True, fixedrange=False)
     return fig
 
 
@@ -1134,12 +1185,24 @@ def main():
     st.divider()
 
     # ── Chart ──────────────────────────────────────────────────────────────────
-    with st.spinner("Loading chart..."):
+    _TF = {
+        "5m":  ("5d",  "5m",  "5-Min",   [9, 21],       500,  75),
+        "15m": ("5d",  "15m", "15-Min",  [9, 21],       200,  30),
+        "1H":  ("60d", "1h",  "Hourly",  [9, 21, 50],   480,  48),
+        "1D":  ("5y",  "1d",  "Daily",   [20, 50, 200], 1260, 120),
+        "1W":  ("max", "1wk", "Weekly",  [10, 20, 50],  520,  78),
+        "1M":  ("max", "1mo", "Monthly", [6, 12, 24],   240,  36),
+    }
+    tf = st.radio("", list(_TF.keys()), index=3, horizontal=True,
+                  key="chart_tf", label_visibility="collapsed")
+    period, interval, tf_label, ema_periods, max_bars, init_bars = _TF[tf]
+
+    with st.spinner(f"Loading {tf_label.lower()} chart..."):
         from utils.data_fetcher import fetch_price_history
-        daily_df = fetch_price_history(symbol_input, period="1y", interval="1d")
-        if not daily_df.empty:
-            fig = draw_chart(daily_df, sa.symbol)
-            st.plotly_chart(fig, use_container_width=True)
+        chart_df = fetch_price_history(symbol_input, period=period, interval=interval)
+        if not chart_df.empty:
+            fig = draw_chart(chart_df, sa.symbol, tf_label, ema_periods, max_bars, interval, init_bars)
+            st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
 
     # ── Trade parameters ──────────────────────────────────────────────────────
     render_trade_params(sa)
