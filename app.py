@@ -975,6 +975,7 @@ def render_screener_page():
                     existing_syms.add(r.symbol)
 
             st.session_state.sc_offset = offset + BATCH_SIZE
+            st.rerun()  # re-render so button states reflect updated offset/results
 
     # ── Results display ────────────────────────────────────────────────────────
     results = st.session_state.sc_results
